@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .  # プロジェクトのルートディレクトリ
+      dockerfile: docker/app.Dockerfile
+    environment:
+      - DISPLAY=${DISPLAY}
+      - MODEL_API_URL=http://model:8000
+      - EYE_TRACKER_URL=ws://host.docker.internal:8765
+      - NODE_ENV=development
+      - DEBUG=electron-*
+      - ELECTRON_DISABLE_SANDBOX=true
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./app:/app:delegated
+      - /dev/shm:/dev/shm
+    network_mode: "host"
+    depends_on:
+      - model
+    security_opt:
+      - seccomp=unconfined
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/dri:/dev/dri
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  model:
+    build:
+      context: .
+      dockerfile: docker/model.Dockerfile
+    platform: linux/amd64
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./model:/app/model
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./data/experiment_sessions:/app/data/experiment_sessions
+    environment:
+      - MODEL_PATH=/app/models
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - DEBUG=1
+      - PYTHONPATH=/app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

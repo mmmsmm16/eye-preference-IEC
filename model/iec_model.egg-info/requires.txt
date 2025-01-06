@@ -1,0 +1,10 @@
+accelerate==0.24.1
+diffusers==0.24.0
+fastapi
+httpx
+pytest
+pytest-asyncio
+python-multipart
+torch==2.1.1
+transformers==4.35.2
+uvicorn

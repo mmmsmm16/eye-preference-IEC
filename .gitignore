@@ -1,0 +1,7 @@
+app/build
+app/data/*
+app/image_data/*
+app/node_modules
+app/package-lock.json
+data/*
+

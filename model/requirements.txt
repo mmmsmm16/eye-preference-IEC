@@ -1,0 +1,13 @@
+torch
+numpy
+pandas
+scikit-learn
+matplotlib
+pyyaml
+uvicorn
+fastapi
+pydantic
+requests
+diffusers==0.31.0
+accelerate==1.2.1
+transformers==4.47.0

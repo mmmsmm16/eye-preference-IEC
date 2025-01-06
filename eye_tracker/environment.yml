@@ -1,0 +1,12 @@
+name: eye_tracker
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - tobii_research
+    - websockets
+    - numpy
+    - pyautogui
