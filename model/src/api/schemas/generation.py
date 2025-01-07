@@ -8,8 +8,7 @@ class GenerationRequest(BaseModel):
     num_images: int = Field(4, description="Number of images to generate")
     generation: int
     session_id: str
-    previous_image_path: Optional[str] = None
-    timestamp: Optional[str] = None
+    interaction_mode: str  # 追加: 'gaze' または 'explicit'
     
     @validator('prompt')
     def prompt_must_not_be_empty(cls, v):
@@ -29,13 +28,20 @@ class GenerationRequest(BaseModel):
             raise ValueError('generation must be non-negative')
         return v
     
+    @validator('interaction_mode')
+    def validate_interaction_mode(cls, v):
+        if v not in ['gaze', 'explicit']:
+            raise ValueError('interaction_mode must be either "gaze" or "explicit"')
+        return v
+    
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "prompt": "a serene landscape with mountains",
             "negative_prompt": None,
             "base_vector": None,
             "num_images": 4,
-            "generation": 0
+            "generation": 0,
+            "interaction_mode": "explicit"
         }
     })
 

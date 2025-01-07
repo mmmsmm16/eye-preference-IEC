@@ -7,21 +7,22 @@ from PIL import Image
 import io
 import base64
 import numpy as np
+import random
 
 class StableDiffusionService:
     def __init__(self):
-        self.model_id = "stabilityai/sdxl-turbo"
-        self.pipe = AutoPipelineForText2Image.from_pretrained(
-            self.model_id,
-            torch_dtype=torch.float16,
-            variant="fp16"
-        )
-        self.pipe = self.pipe.to("cuda")
-        self.generator = torch.Generator(device="cuda")
-        self.latent_shape = (1, 4, 64, 64)
-        self.current_sigma = 1.0  # 初期の突然変異強度
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.output_dir = "get_data"
+            self.model_id = "stabilityai/sdxl-turbo"
+            self.pipe = AutoPipelineForText2Image.from_pretrained(
+                self.model_id,
+                torch_dtype=torch.float16,
+                variant="fp16"
+            )
+            self.pipe = self.pipe.to("cuda")
+            self.generator = torch.Generator(device="cuda")
+            self.latent_shape = (1, 4, 64, 64)
+            self.current_sigma = 1.0
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.output_dir = "data/experiment_sessions"  # 出力ディレクトリを修正
         
     def generate_initial_noise(
         self,
@@ -64,7 +65,9 @@ class StableDiffusionService:
             new_latents.append(new_latent)
 
         # 突然変異強度を更新
-        self.current_sigma *= 0.7
+        self.current_sigma *= 0.9
+        if self.current_sigma <= 0.5:
+            self.current_sigma = 0.5
 
         return new_latents
 
@@ -81,40 +84,51 @@ class StableDiffusionService:
         try:
             images_and_latents = []
             
-            # セッション・ステップディレクトリの作成
+            # セッション・ステップディレクトリを作成
             if session_id:
-                output_dir = os.path.join("get_data", session_id, f"step_{generation}")
+                output_dir = os.path.join(self.output_dir, session_id, f"step_{generation}")
                 os.makedirs(output_dir, exist_ok=True)
+                print(f"Using directory: {output_dir}")
             
             print(f"Starting image generation with prompt: {prompt}")
             
             if base_latent is None:
+                # 初期生成時は通常通り4枚生成
                 for i in range(num_images):
                     print(f"Generating image {i+1}/{num_images}")
-                    latent = self.generate_initial_noise(seed=i + generation * num_images)
+                    latent = self.generate_initial_noise(seed=random.randint(0, 1000000))
                     image = self._generate_single_image(prompt, negative_prompt, latent)
                     
-                    # セッションIDがある場合は画像を保存
                     if session_id:
                         filepath = os.path.join(output_dir, f"image_{i}.png")
                         image.save(filepath)
+                        print(f"Saved image to {filepath}")
                     
                     images_and_latents.append((image, latent))
             else:
-                print("Generating base image")
-                image = self._generate_single_image(prompt, negative_prompt, base_latent)
-                images_and_latents.append((image, base_latent))
+                # 進化時は選択された画像を含めて4枚生成
+                print("Generating selected image")
+                selected_image = self._generate_single_image(prompt, negative_prompt, base_latent)
                 
-                print("Generating mutated images")
-                new_latents = self.random_mutation(base_latent, num_images - 1)
-                for i, latent in enumerate(new_latents):
-                    print(f"Generating mutated image {i+1}/{len(new_latents)}")
+                if session_id:
+                    filepath = os.path.join(output_dir, f"image_0.png")
+                    selected_image.save(filepath)
+                    print(f"Saved selected image to {filepath}")
+                
+                images_and_latents.append((selected_image, base_latent))
+                
+                # 残り3枚の新しい画像を生成
+                print("Generating new images")
+                new_latents = self.random_mutation(base_latent, 3)  # 3枚の新しい画像を生成
+                
+                for i, latent in enumerate(new_latents, 1):  # インデックスを1から開始
+                    print(f"Generating mutated image {i}/3")
                     image = self._generate_single_image(prompt, negative_prompt, latent)
                     
-                    # セッションIDがある場合は画像を保存
                     if session_id:
-                        filepath = os.path.join(output_dir, f"image_{i+1}.png")
+                        filepath = os.path.join(output_dir, f"image_{i}.png")
                         image.save(filepath)
+                        print(f"Saved mutated image to {filepath}")
                     
                     images_and_latents.append((image, latent))
             

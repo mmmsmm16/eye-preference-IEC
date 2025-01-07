@@ -13,15 +13,16 @@ class ImageGenerationService {
                 prompt,
                 negative_prompt: negativePrompt,
                 base_vector: baseVector,
-                num_images: numImages,  // 可変の画像数を使用
+                num_images: numImages,
                 generation,
-                session_id: sessionManager.sessionId
+                session_id: sessionManager.sessionId,
+                interaction_mode: sessionManager.interactionMode  // インタラクションモードを追加
             };
             
             console.log('Request payload:', requestPayload);
 
             const controller = new AbortController();
-            const timeout = 300000; // 5分のタイムアウト
+            const timeout = 300000;
             const timeoutId = setTimeout(() => controller.abort(), timeout);
 
             const response = await fetch(`${this.baseUrl}/generate`, {

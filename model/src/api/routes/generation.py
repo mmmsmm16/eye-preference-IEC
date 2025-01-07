@@ -3,16 +3,22 @@ from fastapi.responses import FileResponse
 from ..schemas.generation import GenerationRequest, GenerationResponse, GeneratedImage
 from ...services.stable_diffusion_service import StableDiffusionService
 import os
-import shutil
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# 保存先のベースディレクトリを更新
+# 保存先のベースディレクトリ
 BASE_DIR = "data/experiment_sessions"
+EXPLICIT_DIR = os.path.join(BASE_DIR, "manual_evaluation")
+GAZE_DIR = os.path.join(BASE_DIR, "gaze_evaluation")
 
 sd_service = StableDiffusionService()
+
+def get_session_dir(session_id: str, interaction_mode: str) -> str:
+    """セッションの保存先ディレクトリを取得"""
+    base = GAZE_DIR if interaction_mode == 'gaze' else EXPLICIT_DIR
+    return os.path.join(base, session_id)
 
 def ensure_directory_exists(path):
     if not os.path.exists(path):
@@ -21,12 +27,11 @@ def ensure_directory_exists(path):
 
 @router.post("/generate")
 async def generate_images(request: GenerationRequest):
-    """画像生成エンドポイント"""
     try:
         logger.debug(f"Received generation request: {request}")
 
-        # セッションとステップのディレクトリを作成
-        session_dir = os.path.join(BASE_DIR, request.session_id)
+        # インタラクションモードに基づいてセッションディレクトリを決定
+        session_dir = get_session_dir(request.session_id, request.interaction_mode)
         step_dir = os.path.join(session_dir, f"step_{request.generation}")
         ensure_directory_exists(step_dir)
         logger.debug(f"Using directory: {step_dir}")
@@ -43,19 +48,23 @@ async def generate_images(request: GenerationRequest):
             negative_prompt=request.negative_prompt,
             base_latent=base_latent,
             num_images=request.num_images,
-            generation=request.generation
+            generation=request.generation,
+            session_id=request.session_id
         )
 
-        # 生成された画像を保存
+        # 生成された画像を保存して応答を準備
         image_data = []
         for idx, (image, latent) in enumerate(generated_results):
-            # タイムスタンプベースのファイル名を削除し、シンプルな連番に変更
             filename = f"image_{idx}.png"
             filepath = os.path.join(step_dir, filename)
-            sd_service.save_image(image, filepath)
-            logger.debug(f"Saved image to {filepath}")
+            
+            try:
+                sd_service.save_image(image, filepath)
+                logger.debug(f"Saved image to {filepath}")
+            except Exception as e:
+                logger.error(f"Error saving image {idx}: {str(e)}")
+                raise
 
-            # レスポンスデータの作成
             latent_base64 = sd_service.latent_to_base64(latent)
             image_data.append(GeneratedImage(
                 url=f"/session-data/{request.session_id}/step_{request.generation}/{filename}",
@@ -76,18 +85,22 @@ async def generate_images(request: GenerationRequest):
         logger.error(f"Error generating images: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/session-data/{session_id}/{step}/{filename}")
+@router.get("/session-data/{session_id}/step_{step}/{filename}")
 async def get_image(session_id: str, step: str, filename: str):
-    """生成された画像を取得するエンドポイント"""
     try:
-        filepath = os.path.join(BASE_DIR, session_id, step, filename)
-        logger.debug(f"Attempting to serve image: {filepath}")
+        # まずgazeディレクトリを確認
+        filepath = os.path.join(GAZE_DIR, session_id, step, filename)
+        if not os.path.exists(filepath):
+            # 見つからない場合はexplicitディレクトリを確認
+            filepath = os.path.join(EXPLICIT_DIR, session_id, step, filename)
+        
+        logger.debug(f"Attempting to serve image from: {filepath}")
         
         if not os.path.exists(filepath):
             logger.error(f"Image not found: {filepath}")
             raise HTTPException(status_code=404, detail=f"Image not found: {filepath}")
             
-        return FileResponse(filepath)
+        return FileResponse(filepath, media_type="image/png")
         
     except Exception as e:
         logger.error(f"Error serving image: {str(e)}")

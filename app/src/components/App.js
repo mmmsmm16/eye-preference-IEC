@@ -10,17 +10,19 @@ import dataManager from '../utils/dataManager';
 import predictionService from '../services/predictionService';
 import StartScreen from './StartScreen';
 import imageGenerationService from '../services/imageGenerationService';
+import FinalResultDisplay from './FinalResultDisplay';  
 
 // アプリケーションのフェーズを定義
 const PHASES = {
-  SELECTION: 'selection',    // 視線/明示的選択フェーズ
-  CHOOSING: 'choosing',      // 手動選択フェーズ
-  PROCESSING: 'processing',  // 予測/生成処理フェーズ
-  CONFIRMING: 'confirming', // 新しい確認フェーズ - 選択後の決定用
-  RESULT: 'result'          // 結果表示フェーズ
+  SELECTION: 'selection',
+  CHOOSING: 'choosing',
+  PROCESSING: 'processing',
+  CONFIRMING: 'confirming',
+  FINAL_RESULT: 'final_result'  // 新しいフェーズ
 };
 
 const SPACE_KEY = 32;
+const ENTER_KEY = 13;
 const DEBUG_KEY = 68;
 
 const ERROR_MESSAGES = {
@@ -48,6 +50,8 @@ function App() {
   const [prediction, setPrediction] = useState(null);
   const [sessionStarted, setSessionStarted] = useState(false);
   const [predictionConfidence, setPredictionConfidence] = useState(null);
+  const [finalSelectedImage, setFinalSelectedImage] = useState(null);
+  const [sessionStartTime, setSessionStartTime] = useState(null);
   
   // アプリケーション設定の状態
   const [interactionMode, setInteractionMode] = useState(null);
@@ -66,8 +70,24 @@ function App() {
   // アイトラッカーの接続
   const { gazeData, isConnected: isEyeTrackerConnected } = useEyeTracker('ws://host.docker.internal:8765');
 
+const formatJapanTime = (date) => {
+    return new Date(date).toLocaleString('ja-JP', {
+      timeZone: 'Asia/Tokyo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  };
+  
+  const calculateDurationInSeconds = (startTime, endTime) => {
+    return Math.round((new Date(endTime) - new Date(startTime)) / 1000);
+  };
+
   // セッション開始の処理
-  const handleStartSession = useCallback(async ({
+const handleStartSession = useCallback(async ({
     interactionMode: mode,
     selectedModel: model,
     prompt: inputPrompt,
@@ -75,23 +95,44 @@ function App() {
     fixedPlacement: placement,
   }) => {
     try {
+      const startTime = new Date().toISOString();
+      setSessionStartTime(startTime);
       setInteractionMode(mode);
+      sessionManager.setInteractionMode(mode);
       setSelectedModel(model);
       setPrompt(inputPrompt);
       setNegativePrompt(inputNegativePrompt);
       setFixedPlacement(placement);
       
-      const sessionId = sessionManager.startNewSession();
+      const sessionId = await sessionManager.startNewSession();
+      
+      // セッションメタデータを保存（開始時刻を含む）
+      const metadata = {
+        evaluationMethod: mode,
+        modelId: model || null,
+        prompt: inputPrompt,
+        negativePrompt: inputNegativePrompt || null,
+        fixedPlacement: placement,
+        eyeTrackerConnected: isEyeTrackerConnected,
+        timestamp: startTime,
+        startTime: formatJapanTime(startTime),  // 日本時間でフォーマット
+        endTime: null,
+        sessionDurationSeconds: null,  // 秒単位に変更
+        finalSelectedImage: null
+      };
+
+      console.log('Saving session metadata:', metadata); // デバッグログ追加
+      
+      await dataManager.saveSessionMetadata(sessionId, metadata);
+      
       setSessionStarted(true);
       setCurrentStep(0);
       setPreviousSelectedImage(null);
       
-      // アイトラッカーが接続されている場合は視線データ収集を開始
       if (isEyeTrackerConnected) {
         dataManager.startCollection();
       }
       
-      // 初期画像の生成
       setPhase(PHASES.PROCESSING);
       const result = await imageGenerationService.generateImages(
         inputPrompt,
@@ -124,8 +165,12 @@ function App() {
   // キーボードイベントの処理
   useEffect(() => {
     const handleKeyPress = (event) => {
-      if (event.keyCode === SPACE_KEY && phase === PHASES.SELECTION) {
-        handleSpacePress();
+      if (phase === PHASES.SELECTION) {  // 評価モードの条件を削除
+        if (event.keyCode === SPACE_KEY) {
+          handleSpacePress();
+        } else if (event.keyCode === ENTER_KEY && interactionMode === 'gaze') {
+          handleEnterPress();
+        }
       } else if (event.keyCode === DEBUG_KEY && event.ctrlKey) {
         setIsDebugMode(prev => !prev);
       }
@@ -133,7 +178,7 @@ function App() {
   
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [phase]);
+  }, [phase, interactionMode]);
 
   // 視線データの処理
   useEffect(() => {
@@ -161,31 +206,169 @@ function App() {
         setShowErrorDialog(true);
         return;
       }
-  
+    
       sessionManager.setCurrentGazeData(gazeBuffer);
       
       try {
+        // 予測を実行
         const result = await predictionService.getPrediction(gazeBuffer);
         setPrediction(result.predictedIndex);
         setPredictionConfidence(result.confidence);
         setSelectedImage(result.predictedIndex);
-        setPhase(PHASES.CONFIRMING);
+    
+        // 予測結果に基づいて直接次のステップへ進む
+        const stepData = {
+          images: images,
+          prompt,
+          generation: currentStep,
+          timestamp: new Date().toISOString(),
+          selectedImage: result.predictedIndex,
+          prediction: result.predictedIndex,
+          predictionConfidence: result.confidence
+        };
+    
+        // データを保存
+        await dataManager.saveStepData(
+          sessionManager.sessionId,
+          currentStep,
+          gazeBuffer,
+          stepData
+        );
+    
+        // 次の画像を生成
+        const selectedImageData = images[result.predictedIndex];
+        const nextResult = await imageGenerationService.generateImages(
+          prompt,
+          negativePrompt,
+          selectedImageData.latent_vector,
+          currentStep + 1,
+          4
+        );
+    
+        if (nextResult && nextResult.images) {
+          // 生成された画像を表示用に処理
+          const newImages = nextResult.images.map(img => ({
+            ...img,
+            src: imageGenerationService.getImageUrl(
+              sessionManager.sessionId,
+              currentStep + 1,
+              img.url.split('/').pop()
+            )
+          }));
+    
+          // 配置に従って画像を並べ替え
+          let displayImages;
+          if (fixedPlacement) {
+            displayImages = newImages;
+          } else {
+            const selectedImage = newImages[0];
+            const otherImages = newImages.slice(1);
+            const insertIndex = Math.floor(Math.random() * 4);
+            displayImages = [...otherImages];
+            displayImages.splice(insertIndex, 0, selectedImage);
+          }
+    
+          setImages(displayImages);
+          setCurrentStep(prev => prev + 1);
+          setPhase(PHASES.SELECTION);
+    
+          // 視線データの収集を再開
+          if (isEyeTrackerConnected) {
+            dataManager.startCollection();
+          }
+        }
       } catch (error) {
-        console.error('Prediction error:', error);
+        console.error('Error processing gaze data:', error);
         setErrorMessage(ERROR_MESSAGES.PREDICTION_FAILED);
         setShowErrorDialog(true);
       }
     } else {
       // 手動評価モードの場合
       if (isEyeTrackerConnected) {
-        // 視線データを保存してからCHOOSINGフェーズへ
         dataManager.stopCollection();
         const gazeBuffer = dataManager.clearGazeBuffer();
         sessionManager.setCurrentGazeData(gazeBuffer);
       }
-      setPhase(PHASES.CHOOSING);
+      setPhase(PHASES.CHOOSING);  // 手動選択フェーズへ
     }
-  }, [phase, interactionMode, isEyeTrackerConnected]);
+  }, [phase, interactionMode, isEyeTrackerConnected, images, prompt, negativePrompt, currentStep, fixedPlacement]);
+
+  const handleEnterPress = useCallback(async () => {
+    if (phase !== PHASES.SELECTION || interactionMode !== 'gaze') return;
+  
+    setPhase(PHASES.PROCESSING);
+    dataManager.stopCollection();
+    const gazeBuffer = dataManager.clearGazeBuffer();
+    
+    if (!gazeBuffer || gazeBuffer.length < 10) {
+      setErrorMessage('Not enough gaze data collected');
+      setShowErrorDialog(true);
+      return;
+    }
+  
+    try {
+      const endTime = new Date().toISOString();
+      const durationSeconds = calculateDurationInSeconds(sessionStartTime, endTime);
+  
+      const result = await predictionService.getPrediction(gazeBuffer);
+      const finalImageIndex = result.predictedIndex;
+      const finalImage = images[finalImageIndex];
+  
+      // 最終データを保存
+      const finalData = {
+        images: images,
+        prompt,
+        generation: currentStep,
+        selectedImage: finalImageIndex,
+        prediction: result.predictedIndex,
+        predictionConfidence: result.confidence,
+        timestamp: new Date().toISOString()
+      };
+  
+      // 最終ステップデータを保存
+      await dataManager.saveStepData(
+        sessionManager.sessionId,
+        currentStep,
+        gazeBuffer,
+        finalData
+      );
+  
+      // セッションメタデータを更新
+      const finalMetadata = {
+        evaluationMethod: interactionMode,
+        modelId: selectedModel,
+        prompt: prompt,
+        negativePrompt: negativePrompt || null,
+        fixedPlacement: fixedPlacement,
+        eyeTrackerConnected: isEyeTrackerConnected,
+        timestamp: endTime,
+        startTime: formatJapanTime(sessionStartTime),
+        endTime: formatJapanTime(endTime),
+        sessionDurationSeconds: durationSeconds,  // 秒単位のduration
+        finalSelectedImage: finalImage ? {
+          ...finalImage,
+          index: finalImageIndex,
+          prediction: result.predictedIndex,
+          confidence: result.confidence
+        } : null
+      };
+  
+      console.log('Saving final session metadata:', finalMetadata);
+  
+      await dataManager.saveSessionMetadata(sessionManager.sessionId, finalMetadata);
+  
+      // 最終選択画像を設定して結果画面へ
+      setFinalSelectedImage(finalImage);
+      setPrediction(result.predictedIndex);
+      setPredictionConfidence(result.confidence);
+      setPhase(PHASES.FINAL_RESULT);
+    } catch (error) {
+      console.error('Error in final prediction:', error);
+      setErrorMessage(ERROR_MESSAGES.PREDICTION_FAILED);
+      setShowErrorDialog(true);
+    }
+  }, [phase, interactionMode, images, prompt, currentStep, selectedModel, 
+      negativePrompt, fixedPlacement, isEyeTrackerConnected, sessionStartTime]);
 
   // 画像選択のハンドラー
   const handleImageSelect = useCallback(async (imageIndex) => {
@@ -226,17 +409,17 @@ function App() {
       // 選択された画像を保持
       const selectedImageData = images[selectedImage];
   
-      // 3枚の新しい画像を生成
+      // 4枚の画像を生成（選択された画像を含む）
       const result = await imageGenerationService.generateImages(
         prompt,
         negativePrompt,
         selectedImageData.latent_vector,
-        currentStep + 1,
-        3  // 生成する画像の数を3に変更
+        currentStep + 1,  // generation
+        4  // numImages
       );
   
       if (result && result.images) {
-        // 生成された新しい画像を処理
+        // 生成された画像をマップ
         const newImages = result.images.map(img => ({
           ...img,
           src: imageGenerationService.getImageUrl(
@@ -246,20 +429,21 @@ function App() {
           )
         }));
   
-        // 選択された画像を含む配列を作成
-        let combinedImages;
+        // 配置設定に基づいて画像を並べ替え
+        let displayImages;
         if (fixedPlacement) {
-          // 固定配置: 選択された画像を左上に配置
-          combinedImages = [selectedImageData, ...newImages];
+          // 選択された画像（newImages[0]）を左上に固定
+          displayImages = newImages;
         } else {
-          // ランダム配置: 選択された画像をランダムな位置に配置
+          // 選択された画像をランダムな位置に配置
+          const selectedImage = newImages[0];
+          const otherImages = newImages.slice(1);
           const insertIndex = Math.floor(Math.random() * 4);
-          combinedImages = [...newImages];
-          combinedImages.splice(insertIndex, 0, selectedImageData);
+          displayImages = [...otherImages];
+          displayImages.splice(insertIndex, 0, selectedImage);
         }
   
-        setImages(combinedImages);
-        setPreviousSelectedImage(selectedImageData);
+        setImages(displayImages);
         setCurrentStep(prev => prev + 1);
         setPhase(PHASES.SELECTION);
         
@@ -275,12 +459,13 @@ function App() {
       setPhase(PHASES.SELECTION);
     }
   }, [selectedImage, images, prompt, negativePrompt, currentStep, fixedPlacement, isEyeTrackerConnected]);
-  
 
   // 選択して終了するハンドラー
   const handleFinishWithSelection = useCallback(async () => {
     try {
-      // 最終選択のデータを準備
+      const endTime = new Date().toISOString();
+      const durationSeconds = calculateDurationInSeconds(sessionStartTime, endTime);
+
       const finalData = {
         images: images,
         prompt,
@@ -288,26 +473,70 @@ function App() {
         selectedImage: selectedImage,
         prediction: prediction,
         predictionConfidence: predictionConfidence,
-        timestamp: new Date().toISOString()
+        timestamp: endTime
       };
-  
-      // 最終データを保存
+
       await dataManager.saveStepData(
         sessionManager.sessionId,
         currentStep,
         sessionManager.getCurrentGazeData(),
         finalData
       );
-  
-      // セッション終了
-      handleEndSession();
+
+      // 最終選択画像を設定
+      const finalImage = images[selectedImage];
+      // セッションメタデータを更新（所要時間を含む）
+      const finalMetadata = {
+        evaluationMethod: interactionMode,
+        modelId: selectedModel,
+        prompt,
+        negativePrompt: negativePrompt || null,
+        fixedPlacement: fixedPlacement,
+        eyeTrackerConnected: isEyeTrackerConnected,
+        timestamp: endTime,
+        startTime: formatJapanTime(sessionStartTime),
+        endTime: formatJapanTime(endTime),
+        sessionDurationSeconds: durationSeconds,
+        finalSelectedImage: {
+          ...finalImage,
+          index: selectedImage,
+          prediction: prediction,
+          confidence: predictionConfidence
+        }
+      };
+
+      console.log('Saving final session metadata (manual):', finalMetadata);
+
+      await dataManager.saveSessionMetadata(
+        sessionManager.sessionId, 
+        finalMetadata
+      );
+
+      setFinalSelectedImage(finalImage);
+      setPhase(PHASES.FINAL_RESULT);
     } catch (error) {
       console.error('Error saving final selection:', error);
       setErrorMessage('Failed to save final selection');
       setShowErrorDialog(true);
     }
-  }, [selectedImage, prediction, predictionConfidence, currentStep, images, prompt]);
+}, [selectedImage, prediction, predictionConfidence, currentStep, images, prompt, 
+    interactionMode, selectedModel, negativePrompt, fixedPlacement, isEyeTrackerConnected, 
+    sessionStartTime]);
 
+  const handleExitToStart = useCallback(() => {
+    setSessionStarted(false);
+    setPhase(PHASES.SELECTION);
+    setSelectedImage(null);
+    setPrediction(null);
+    setPredictionConfidence(null);
+    setCurrentStep(0);
+    setPrompt('');
+    setNegativePrompt('');
+    setInteractionMode(null);
+    setFinalSelectedImage(null);
+    dataManager.stopCollection();
+  }, []);
+  
   // セッション終了
   const handleEndSession = useCallback(() => {
     setSessionStarted(false);
@@ -334,71 +563,83 @@ function App() {
         />
       ) : (
         <>
-          <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Typography variant="h5">
-              Eye Preference Evolution System
-            </Typography>
-            <Box>
-              <Typography color={isEyeTrackerConnected ? 'success.main' : 'error.main'}>
-                Eye Tracker: {isEyeTrackerConnected ? 'Connected' : 'Disconnected'}
-              </Typography>
-              {isDebugMode && <Typography>Debug Mode Active (Ctrl+D to toggle)</Typography>}
-            </Box>
-          </Box>
-
-          <Box sx={{ mb: 2 }}>
-            <Typography variant="body1">
-              Current Prompt: {prompt}
-            </Typography>
-            {negativePrompt && (
-              <Typography variant="body2" color="text.secondary">
-                Negative Prompt: {negativePrompt}
-              </Typography>
-            )}
-          </Box>
-
-          <LinearProgress 
-            variant="determinate" 
-            value={currentStep * 10} 
-            sx={{ mb: 2 }} 
-          />
-
-          {/* 選択フェーズ - 視線データ収集中 */}
+          {phase !== PHASES.FINAL_RESULT && (
+            <>
+              <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="h5">
+                  Eye Preference Evolution System
+                </Typography>
+                <Box>
+                  <Typography color={isEyeTrackerConnected ? 'success.main' : 'error.main'}>
+                    Eye Tracker: {isEyeTrackerConnected ? 'Connected' : 'Disconnected'}
+                  </Typography>
+                  {isDebugMode && <Typography>Debug Mode Active (Ctrl+D to toggle)</Typography>}
+                </Box>
+              </Box>
+  
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="body1">
+                  Current Prompt: {prompt}
+                </Typography>
+                {negativePrompt && (
+                  <Typography variant="body2" color="text.secondary">
+                    Negative Prompt: {negativePrompt}
+                  </Typography>
+                )}
+              </Box>
+  
+              <LinearProgress 
+                variant="determinate" 
+                value={currentStep * 10} 
+                sx={{ mb: 2 }} 
+              />
+            </>
+          )}
+  
           {phase === PHASES.SELECTION && (
             <ImageGallery 
               images={images}
               gazeData={isDebugMode ? gazeData : null}
             />
           )}
-
-          {/* 手動選択フェーズ */}
+  
           {phase === PHASES.CHOOSING && interactionMode === 'explicit' && (
             <SelectionDisplay 
               images={images}
               onImageSelect={handleImageSelect}
             />
           )}
-
-          {/* 確認フェーズ - 新しく追加 */}
-          {phase === PHASES.CONFIRMING && (
+  
+          {phase === PHASES.CONFIRMING && interactionMode === 'explicit' && (
             <SelectionConfirmation
               selectedImage={selectedImage}
-              predictedIndex={interactionMode === 'gaze' ? prediction : null}
-              confidence={interactionMode === 'gaze' ? predictionConfidence : null}
+              predictedIndex={null}
+              confidence={null}
               onNext={handleContinueEvolution}
               onFinish={handleFinishWithSelection}
             />
           )}
-
-          {/* 進行状況表示 */}
-          <Box sx={{ mt: 2, display: 'flex', justifyContent: 'between' }}>
-            <Typography>
-              Generation: {currentStep}
-            </Typography>
-          </Box>
+  
+          {phase === PHASES.FINAL_RESULT && finalSelectedImage && (
+            <FinalResultDisplay 
+              selectedImage={finalSelectedImage}
+              prompt={prompt}
+              predictionConfidence={predictionConfidence}
+              isPredicted={interactionMode === 'gaze'}
+              onExit={handleExitToStart}
+            />
+          )}
+  
+          {phase !== PHASES.FINAL_RESULT && (
+            <Box sx={{ mt: 2, display: 'flex', justifyContent: 'between' }}>
+              <Typography>
+                Generation: {currentStep}
+              </Typography>
+            </Box>
+          )}
         </>
       )}
-
+  
       {/* エラーダイアログ */}
       {showErrorDialog && (
         <Box sx={{
