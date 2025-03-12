@@ -2,7 +2,7 @@ import React, { useRef, useEffect } from 'react';
 import { Box, Grid, Card, CardMedia } from '@mui/material';
 import { useResponsiveImageSize } from '../hooks/useResponsiveImageSize';
 
-const ImageGallery = ({ images, gazeData }) => {
+const ImageGallery = ({ images, gazeData, onNextEvolution, onFinish }) => {
   const { imageHeight, imageWidth } = useResponsiveImageSize('selection');
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
@@ -43,16 +43,32 @@ const ImageGallery = ({ images, gazeData }) => {
     ctx.fill();
   }, [gazeData]);
 
+  const handleClick = (e) => {
+    if (e.button === 0) {  // 左クリック
+      onNextEvolution && onNextEvolution();
+    } else if (e.button === 2) {  // 右クリック
+      e.preventDefault();  // デフォルトのコンテキストメニューを無効化
+      onFinish && onFinish();
+    }
+  };
+
+  // コンテキストメニューを無効化
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+  };
+
   return (
     <Box 
       ref={containerRef} 
       sx={{ 
         minHeight: 'calc(100vh - 160px)',
         display: 'flex',
-        alignItems: 'center', // 垂直方向の中央揃え
-        justifyContent: 'center', // 水平方向の中央揃え
+        alignItems: 'center',
+        justifyContent: 'center',
         position: 'relative'
       }}
+      onMouseDown={handleClick}
+      onContextMenu={handleContextMenu}
     >
       <canvas
         ref={canvasRef}

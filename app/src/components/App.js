@@ -57,7 +57,7 @@ function App() {
   const [interactionMode, setInteractionMode] = useState(null);
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
-  const [selectedModel, setSelectedModel] = useState(null);
+  const [selectedModel, setSelectedModel] = useState('transformer_method2');
 
   // エラー関連の状態
   const [showErrorDialog, setShowErrorDialog] = useState(false);
@@ -596,12 +596,14 @@ const handleStartSession = useCallback(async ({
             </>
           )}
   
-          {phase === PHASES.SELECTION && (
-            <ImageGallery 
-              images={images}
-              gazeData={isDebugMode ? gazeData : null}
-            />
-          )}
+        {phase === PHASES.SELECTION && (
+          <ImageGallery 
+            images={images}
+            gazeData={isDebugMode ? gazeData : null}
+            onNextEvolution={interactionMode === 'gaze' ? handleSpacePress : null}
+            onFinish={interactionMode === 'gaze' ? handleEnterPress : null}
+          />
+        )}
   
           {phase === PHASES.CHOOSING && interactionMode === 'explicit' && (
             <SelectionDisplay 

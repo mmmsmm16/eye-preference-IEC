@@ -66,8 +66,8 @@ class StableDiffusionService:
 
         # 突然変異強度を更新
         self.current_sigma *= 0.9
-        if self.current_sigma <= 0.5:
-            self.current_sigma = 0.5
+        if self.current_sigma <= 0.2:
+            self.current_sigma = 0.2
 
         return new_latents
 
